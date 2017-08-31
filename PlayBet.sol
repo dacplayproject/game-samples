@@ -17,7 +17,7 @@ contract PlayBet is Owned {
         bool isRevealed;
 
         // reveal time
-        uint num;
+        uint nonce;
         bool guessOdd;
         bytes32 secret;
     }
@@ -45,6 +45,12 @@ contract PlayBet is Owned {
     uint poolAmount;
 
     uint256 public initializeTime;
+
+    modifier notNull(address _address) {
+        if (_address == 0)
+            throw;
+        _;
+    }
 
     function PlayBet()
     {
@@ -74,7 +80,7 @@ contract PlayBet is Owned {
         require(rounds[_roundId].betIds.length < rounds[_roundId].betCount);
 
 
-        for (uint i=0; i<rounds[_roundId].length; i++) {
+        for (uint i=0; i<rounds[_roundId].betIds.length; i++) {
             if (bets[rounds[_roundId].betIds[i]].player == msg.sender)
                 throw;
         }
@@ -83,7 +89,7 @@ contract PlayBet is Owned {
 
         rounds[_roundId].betIds.push(betId);
 
-        bets[betId]._roundId = _roundId;
+        bets[betId].roundId = _roundId;
 
         if (rounds[_roundId].betIds.length == rounds[_roundId].betCount)
         {
@@ -91,17 +97,17 @@ contract PlayBet is Owned {
         }
     }
 
-    function revealBet(uint betId, uint _num, bool _guessOdd, bytes32 _secret) public returns (bool)
+    function revealBet(uint betId, uint _nonce, bool _guessOdd, bytes32 _secret) public returns (bool)
     {
         Bet bet = bets[betId];
         Round round = rounds[bet.roundId];
         require(round.betIds.length == round.betCount);
-        require(!round.finalize);
+        require(round.finalizedBlock == 0);
 
-        if (bet.secretBet == keccak256(_num, _guessOdd, _secret) )
+        if (bet.secret == keccak256(_nonce, _guessOdd, _secret) )
         {
             bet.isRevealed = true;
-            bet.num = _num;
+            bet.nonce = _nonce;
             bet.guessOdd = _guessOdd;
             bet.secret = _secret;
             
@@ -115,23 +121,23 @@ contract PlayBet is Owned {
      * Internal functions
      */
     /// @dev Adds a new bet to the bet mapping, if bet does not exist yet.
-    /// @param destination Transaction target address.
-    /// @param value Transaction ether value.
-    /// @param data Transaction data payload.
+    /// @param _player The player of the bet.
+    /// @param _secretHash The hash of the nonce, guessOdd, and secret for the bet, hash ＝ keccak256(_num, _guessOdd, _secret) 
+    /// @param _amount The amount of the bet.
     /// @return Returns bet ID.
     function addBet(address _player, bytes32 _secretHash, uint256 _amount)
         internal
-        notNull(player)
+        notNull(_player)
         returns (uint betId)
     {
         betId = betCount;
         bets[betId] = Bet({
-            player: player,
+            player: _player,
             secretHash: _secretHash,
             amount: _amount,
             roundId: 0,
             isRevealed: false,
-            num:0,
+            nonce:0,
             guessOdd:false,
             secret: ""
         });
@@ -149,6 +155,8 @@ contract PlayBet is Owned {
             maxBetBlockCount: _maxBetBlockCount,
             maxRevealBlockCount: _maxRevealBlockCount,
             betIds: [_betId],
+            startBetBlock: getBlockNumber(),
+            startRevealBlock: 0,
             finalizedBlock: 0
         });
 
@@ -166,13 +174,17 @@ contract PlayBet is Owned {
         require(round.finalizedBlock != 0);
 
         uint finalizedBlock = getBlockNumber();
+        
+        uint i = 0;
+        Bet bet;
+        uint reward = 0;
         if (round.betIds.length < round.betCount && finalizedBlock.sub(round.startBetBlock) > round.maxBetBlockCount)
         {
             // betting timeout
             // return funds to players
 
-            for (uint i=0; i<round.betIds.length; i++) {
-                Bet bet = bets[round.betIds[i]];
+            for (i=0; i<round.betIds.length; i++) {
+                bet = bets[round.betIds[i]];
                 balancesForWithdraw[bet.player] = balancesForWithdraw[bet.player].add(bet.amount);
             }
 
@@ -181,8 +193,8 @@ contract PlayBet is Owned {
         } else if (round.betIds.length == round.betCount) {
             bool betsRevealed = true;
 
-            for (uint i=0; i<round.betIds.length; i++) {
-                Bet bet = bets[round.betIds[i]];
+            for (i=0; i<round.betIds.length; i++) {
+                bet = bets[round.betIds[i]];
                 if (!bet.isRevealed)
                 {
                     betsRevealed = false;
@@ -200,8 +212,8 @@ contract PlayBet is Owned {
                 uint evenCount;
                 uint evenSum;
 
-                for (uint i=0; i<round.betIds.length; i++) {
-                    Bet bet = bets[round.betIds[i]];
+                for (i=0; i<round.betIds.length; i++) {
+                    bet = bets[round.betIds[i]];
                     jackpotSum = jackpotSum.add(bet.amount);
                     jackpotNum = jackpotNum.add(uint(bet.secret));
                     
@@ -225,17 +237,17 @@ contract PlayBet is Owned {
                 }
 
                 uint dustLeft = jackpotSum;
-                for (uint i=0; i<round.betIds.length; i++) {
-                    Bet bet = bets[round.betIds[i]];
+                for (i=0; i<round.betIds.length; i++) {
+                    bet = bets[round.betIds[i]];
 
                     if (isOddWin && bet.guessOdd)
                     {
-                        uint reward = bet.amount.mul(jackpotSum).div(oddSum);
+                        reward = bet.amount.mul(jackpotSum).div(oddSum);
                         balancesForWithdraw[bet.player] = balancesForWithdraw[bet.player].add(reward);
                         dustLeft = dustLeft.sub(reward);
                     } else if (!isOddWin && !bet.guessOdd)
                     {
-                        uint reward = bet.amount.mul(jackpotSum).div(evenSum);
+                        reward = bet.amount.mul(jackpotSum).div(evenSum);
                         balancesForWithdraw[bet.player] = balancesForWithdraw[bet.player].add(reward);
                         dustLeft = dustLeft.sub(reward);
                     }
@@ -252,8 +264,8 @@ contract PlayBet is Owned {
                 // but for those who didn't reveal, the funds go to pool
                 // revealing timeout
 
-                for (uint i=0; i<round.betIds.length; i++) {
-                    Bet bet = bet[round.betIds[i]];
+                for (i=0; i<round.betIds.length; i++) {
+                    bet = bet[round.betIds[i]];
                     if (bet.isRevealed)
                     {
                         balancesForWithdraw[bet.player] = balancesForWithdraw[bet.player].add(bet.amount);
@@ -302,9 +314,9 @@ contract PlayBet is Owned {
     }
 
     event BetSubmission(uint indexed _betId);
-    event BetSubmission(uint indexed _roundId);
+    event RoundSubmission(uint indexed _roundId);
 
     event ClaimFromPool();
     
-    event TestSha2(bytes32);
+    // event TestSha2(bytes32);
 }
