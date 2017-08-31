@@ -265,7 +265,7 @@ contract PlayBet is Owned {
                 // revealing timeout
 
                 for (i=0; i<round.betIds.length; i++) {
-                    bet = bet[round.betIds[i]];
+                    bet = bets[round.betIds[i]];
                     if (bet.isRevealed)
                     {
                         balancesForWithdraw[bet.player] = balancesForWithdraw[bet.player].add(bet.amount);
