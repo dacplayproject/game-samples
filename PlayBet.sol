@@ -150,137 +150,166 @@ contract PlayBet is Owned {
         returns (uint roundId)
     {
         roundId = roundCount;
-        rounds[roundId] = Round({
-            betCount: _betCount,
-            maxBetBlockCount: _maxBetBlockCount,
-            maxRevealBlockCount: _maxRevealBlockCount,
-            betIds: [_betId],
-            startBetBlock: getBlockNumber(),
-            startRevealBlock: 0,
-            finalizedBlock: 0
-        });
+        Round round;
+        rounds[roundId] = round;
+        rounds[roundId].betCount = _betCount;
+        rounds[roundId].maxBetBlockCount = _maxBetBlockCount;
+        rounds[roundId].maxRevealBlockCount = _maxRevealBlockCount;
+        rounds[roundId].betIds.push(_betId);
+        rounds[roundId].startBetBlock = getBlockNumber();
+        rounds[roundId].startRevealBlock = 0;
+        rounds[roundId].finalizedBlock = 0;
 
         bets[_betId].roundId = roundId;
 
         roundCount += 1;
         RoundSubmission(roundId);
     }
+    
+    function betRevealed(uint roundId) constant internal returns(bool)
+    {
+        bool betsRevealed = true;
+        uint i = 0;
+        Bet bet;
+        for (i=0; i<rounds[roundId].betIds.length; i++) {
+            bet = bets[rounds[roundId].betIds[i]];
+            if (!bet.isRevealed)
+            {
+                betsRevealed = false;
+                break;
+            }
+        }
+        
+        return betsRevealed;
+    }
+    
+    function getJackpotResults(uint roundId) constant internal returns(uint, uint, bool)
+    {
+        uint jackpotSum;
+        uint jackpotNum;
+
+        uint oddCount;
+        uint oddSum;
+
+        uint i = 0;
+        
+        for (i=0; i<rounds[roundId].betIds.length; i++) {
+            jackpotSum = jackpotSum.add(bets[rounds[roundId].betIds[i]].amount);
+            jackpotNum = jackpotNum.add(uint(bets[rounds[roundId].betIds[i]].secret));
+            
+            if(bets[rounds[roundId].betIds[i]].guessOdd){
+                oddCount++;
+                oddSum = oddSum.add(bets[rounds[roundId].betIds[i]].amount);
+            }
+        }
+        
+        bool isOddWin = (jackpotNum % 2 == 1) ? true : false;
+        // uint winnerNumber = isOddWin ? oddCount: evenCount;
+
+        if (oddCount == 0 || oddCount == rounds[roundId].betIds.length)
+        {
+            // winnerNumber = oddCount > 0 ? oddCount : evenCount;
+            isOddWin = oddCount > 0 ? true : false;
+        }
+        
+        return (jackpotSum, oddSum, isOddWin);
+    }
+    
+    function updateRewardForBet(uint betId, bool isOddWin, uint jackpotSum, uint oddSum, uint evenSum, uint dustLeft) internal returns(uint)
+    {
+        uint reward = 0;
+        if (isOddWin && bets[betId].guessOdd)
+        {
+            reward = bets[betId].amount.mul(jackpotSum).div(oddSum);
+            balancesForWithdraw[bets[betId].player] = balancesForWithdraw[bets[betId].player].add(reward);
+            dustLeft = dustLeft.sub(reward);
+        } else if (!isOddWin && !bets[betId].guessOdd)
+        {
+            reward = bets[betId].amount.mul(jackpotSum).div(evenSum);
+            balancesForWithdraw[bets[betId].player] = balancesForWithdraw[bets[betId].player].add(reward);
+            dustLeft = dustLeft.sub(reward);
+        }
+        
+        return dustLeft;
+    }
+    
+    function updateJackpotRewards(uint roundId) internal returns(uint)
+    {
+        var (jackpotSum, oddSum, isOddWin) = getJackpotResults(roundId);
+
+        uint dustLeft = jackpotSum;
+        uint i = 0;
+        
+        for (i=0; i<rounds[roundId].betIds.length; i++) {
+            dustLeft = updateRewardForBet(rounds[roundId].betIds[i], isOddWin, jackpotSum, oddSum, jackpotSum - oddSum, dustLeft);
+        }
+        
+        return dustLeft;
+    }
+
+    function calculateJackpot(uint roundId) internal
+    {
+        uint finalizedBlock = getBlockNumber();
+        
+        bool betsRevealed = betRevealed(roundId);
+
+        if (betsRevealed)
+        {
+            uint dustLeft = updateJackpotRewards(roundId);
+
+            poolAmount = poolAmount.add(dustLeft);
+
+            rounds[roundId].finalizedBlock = finalizedBlock;
+            return;
+        }
+        else if (!betsRevealed && finalizedBlock.sub(rounds[roundId].startRevealBlock) > rounds[roundId].maxBetBlockCount)
+        {
+            // return funds to players who have already revealed
+            // but for those who didn't reveal, the funds go to pool
+            // revealing timeout
+            uint i = 0;
+            for (i=0; i<rounds[roundId].betIds.length; i++) {
+                if (bets[rounds[roundId].betIds[i]].isRevealed)
+                {
+                    balancesForWithdraw[bets[rounds[roundId].betIds[i]].player] = balancesForWithdraw[bets[rounds[roundId].betIds[i]].player].add(bets[rounds[roundId].betIds[i]].amount);
+                } else
+                {
+                    // go to pool
+                    poolAmount = poolAmount.add(bets[rounds[roundId].betIds[i]].amount);
+                }
+            }
+
+            rounds[roundId].finalizedBlock = finalizedBlock;
+            return;
+        } else{
+            throw;
+        }
+    }
 
     // anyone can try to finalize after the max block count or bets in the round are all revealed.
     function finalizeRound(uint roundId) public
     {
-        Round round = rounds[roundId];
-
-        require(round.finalizedBlock != 0);
+        require(rounds[roundId].finalizedBlock != 0);
 
         uint finalizedBlock = getBlockNumber();
         
         uint i = 0;
         Bet bet;
-        uint reward = 0;
-        if (round.betIds.length < round.betCount && finalizedBlock.sub(round.startBetBlock) > round.maxBetBlockCount)
+        
+        if (rounds[roundId].betIds.length < rounds[roundId].betCount && finalizedBlock.sub(rounds[roundId].startBetBlock) > rounds[roundId].maxBetBlockCount)
         {
             // betting timeout
             // return funds to players
 
-            for (i=0; i<round.betIds.length; i++) {
-                bet = bets[round.betIds[i]];
+            for (i=0; i<rounds[roundId].betIds.length; i++) {
+                bet = bets[rounds[roundId].betIds[i]];
                 balancesForWithdraw[bet.player] = balancesForWithdraw[bet.player].add(bet.amount);
             }
 
-            round.finalizedBlock = finalizedBlock;
+            rounds[roundId].finalizedBlock = finalizedBlock;
             return;
-        } else if (round.betIds.length == round.betCount) {
-            bool betsRevealed = true;
-
-            for (i=0; i<round.betIds.length; i++) {
-                bet = bets[round.betIds[i]];
-                if (!bet.isRevealed)
-                {
-                    betsRevealed = false;
-                    break;
-                }
-            }
-
-            if (betsRevealed)
-            {
-                uint jackpotSum;
-                uint jackpotNum;
-        
-                uint oddCount;
-                uint oddSum;
-                uint evenCount;
-                uint evenSum;
-
-                for (i=0; i<round.betIds.length; i++) {
-                    bet = bets[round.betIds[i]];
-                    jackpotSum = jackpotSum.add(bet.amount);
-                    jackpotNum = jackpotNum.add(uint(bet.secret));
-                    
-                    if(bet.guessOdd){
-                        oddCount++;
-                        oddSum = oddSum.add(bet.amount);
-                    }else{
-                        evenCount++;
-                        evenSum = evenSum.add(bet.amount);
-                    }
-                }
-
-                bool isOddWin = (jackpotNum % 2 == 1) ? true : false;
-
-                uint winnerNumber = isOddWin ? oddCount: evenCount;
-
-                if (oddCount == 0 || evenCount == 0)
-                {
-                    winnerNumber = oddCount > 0 ? oddCount : evenCount;
-                    isOddWin = oddCount > 0 ? true : false;
-                }
-
-                uint dustLeft = jackpotSum;
-                for (i=0; i<round.betIds.length; i++) {
-                    bet = bets[round.betIds[i]];
-
-                    if (isOddWin && bet.guessOdd)
-                    {
-                        reward = bet.amount.mul(jackpotSum).div(oddSum);
-                        balancesForWithdraw[bet.player] = balancesForWithdraw[bet.player].add(reward);
-                        dustLeft = dustLeft.sub(reward);
-                    } else if (!isOddWin && !bet.guessOdd)
-                    {
-                        reward = bet.amount.mul(jackpotSum).div(evenSum);
-                        balancesForWithdraw[bet.player] = balancesForWithdraw[bet.player].add(reward);
-                        dustLeft = dustLeft.sub(reward);
-                    }
-                }
-
-                poolAmount = poolAmount.add(dustLeft);
-
-                round.finalizedBlock = finalizedBlock;
-                return;
-            }
-            else if (!betsRevealed && finalizedBlock.sub(round.startRevealBlock) > round.maxBetBlockCount)
-            {
-                // return funds to players who have already revealed
-                // but for those who didn't reveal, the funds go to pool
-                // revealing timeout
-
-                for (i=0; i<round.betIds.length; i++) {
-                    bet = bets[round.betIds[i]];
-                    if (bet.isRevealed)
-                    {
-                        balancesForWithdraw[bet.player] = balancesForWithdraw[bet.player].add(bet.amount);
-                    } else
-                    {
-                        // go to pool
-                        poolAmount = poolAmount.add(bet.amount);
-                    }
-                }
-
-                round.finalizedBlock = finalizedBlock;
-                return;
-            } else{
-                throw;
-            }
+        } else if (rounds[roundId].betIds.length == rounds[roundId].betCount) {
+            calculateJackpot(roundId);
         } else
         {
             throw;
