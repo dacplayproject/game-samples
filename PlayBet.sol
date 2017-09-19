@@ -55,7 +55,6 @@ contract PlayBet is Owned {
     function PlayBet()
     {
         initializeTime = now;
-
         roundCount = 1;
     }
     
@@ -104,7 +103,7 @@ contract PlayBet is Owned {
         require(round.betIds.length == round.betCount);
         require(round.finalizedBlock == 0);
 
-        if (bet.secret == keccak256(_nonce, _guessOdd, _secret) )
+        if (bet.secretHash == keccak256(_nonce, _guessOdd, _secret) )
         {
             bet.isRevealed = true;
             bet.nonce = _nonce;
@@ -115,6 +114,63 @@ contract PlayBet is Owned {
         }
         
         return false;
+    }
+
+    // For players to calculate hash of secret before start a bet.
+    function calculateSecretHash(uint _nonce, bool _guessOdd, bytes32 _secret) constant public returns (bytes32 secretHash)
+    {
+        secretHash = keccak256(_nonce, _guessOdd, _secret);
+    }
+
+    // anyone can try to finalize after the max block count or bets in the round are all revealed.
+    function finalizeRound(uint roundId) public
+    {
+        require(rounds[roundId].finalizedBlock != 0);
+
+        uint finalizedBlock = getBlockNumber();
+        
+        uint i = 0;
+        Bet bet;
+        
+        if (rounds[roundId].betIds.length < rounds[roundId].betCount && finalizedBlock.sub(rounds[roundId].startBetBlock) > rounds[roundId].maxBetBlockCount)
+        {
+            // betting timeout
+            // return funds to players
+
+            for (i=0; i<rounds[roundId].betIds.length; i++) {
+                bet = bets[rounds[roundId].betIds[i]];
+                balancesForWithdraw[bet.player] = balancesForWithdraw[bet.player].add(bet.amount);
+            }
+
+            rounds[roundId].finalizedBlock = finalizedBlock;
+            return;
+        } else if (rounds[roundId].betIds.length == rounds[roundId].betCount) {
+            calculateJackpot(roundId);
+        } else
+        {
+            throw;
+        }
+    }
+
+    function withdraw() public returns (bool)
+    {
+        var amount = balancesForWithdraw[msg.sender];
+        if (amount > 0) {
+            balancesForWithdraw[msg.sender] = 0;
+
+            if (!msg.sender.send(amount)){
+                // No need to call throw here, just reset the amount owing
+                balancesForWithdraw[msg.sender] = amount;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function claimFromPool() public onlyOwner
+    {
+        owner.transfer(poolAmount);
+        ClaimFromPool();
     }
 
     /*
@@ -233,18 +289,16 @@ contract PlayBet is Owned {
         return dustLeft;
     }
     
-    function updateJackpotRewards(uint roundId) internal returns(uint)
+    function updateJackpotRewards(uint roundId) internal returns (uint dustLeft)
     {
         var (jackpotSum, oddSum, isOddWin) = getJackpotResults(roundId);
 
-        uint dustLeft = jackpotSum;
+        dustLeft = jackpotSum;
         uint i = 0;
         
         for (i=0; i<rounds[roundId].betIds.length; i++) {
             dustLeft = updateRewardForBet(rounds[roundId].betIds[i], isOddWin, jackpotSum, oddSum, jackpotSum - oddSum, dustLeft);
         }
-        
-        return dustLeft;
     }
 
     function calculateJackpot(uint roundId) internal
@@ -286,66 +340,13 @@ contract PlayBet is Owned {
         }
     }
 
-    // anyone can try to finalize after the max block count or bets in the round are all revealed.
-    function finalizeRound(uint roundId) public
-    {
-        require(rounds[roundId].finalizedBlock != 0);
-
-        uint finalizedBlock = getBlockNumber();
-        
-        uint i = 0;
-        Bet bet;
-        
-        if (rounds[roundId].betIds.length < rounds[roundId].betCount && finalizedBlock.sub(rounds[roundId].startBetBlock) > rounds[roundId].maxBetBlockCount)
-        {
-            // betting timeout
-            // return funds to players
-
-            for (i=0; i<rounds[roundId].betIds.length; i++) {
-                bet = bets[rounds[roundId].betIds[i]];
-                balancesForWithdraw[bet.player] = balancesForWithdraw[bet.player].add(bet.amount);
-            }
-
-            rounds[roundId].finalizedBlock = finalizedBlock;
-            return;
-        } else if (rounds[roundId].betIds.length == rounds[roundId].betCount) {
-            calculateJackpot(roundId);
-        } else
-        {
-            throw;
-        }
-    }
-
     /// @notice This function is overridden by the test Mocks.
     function getBlockNumber() internal constant returns (uint256) {
         return block.number;
-    }
-
-    function withdraw() public returns (bool)
-    {
-        var amount = balancesForWithdraw[msg.sender];
-        if (amount > 0) {
-            balancesForWithdraw[msg.sender] = 0;
-
-            if (!msg.sender.send(amount)){
-                // No need to call throw here, just reset the amount owing
-                balancesForWithdraw[msg.sender] = amount;
-                return false;
-            }
-        }
-        return true;
-    }
-
-    function claimFromPool() public onlyOwner
-    {
-        owner.transfer(poolAmount);
-        ClaimFromPool();
     }
 
     event BetSubmission(uint indexed _betId);
     event RoundSubmission(uint indexed _roundId);
 
     event ClaimFromPool();
-    
-    // event TestSha2(bytes32);
 }
