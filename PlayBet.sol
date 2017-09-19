@@ -42,7 +42,7 @@ contract PlayBet is Owned {
     mapping(uint => Round) public rounds;
     mapping(address => uint) public balancesForWithdraw;
 
-    uint poolAmount;
+    uint public poolAmount;
 
     uint256 public initializeTime;
 
@@ -74,7 +74,7 @@ contract PlayBet is Owned {
     function betWithRound(uint _roundId, bytes32 _secretHashForBet) payable public
     {
         require(msg.value>0);
-        require(rounds[_roundId].finalizedBlock != 0);
+        require(rounds[_roundId].finalizedBlock == 0);
         
         require(rounds[_roundId].betIds.length < rounds[_roundId].betCount);
 
@@ -116,16 +116,10 @@ contract PlayBet is Owned {
         return false;
     }
 
-    // For players to calculate hash of secret before start a bet.
-    function calculateSecretHash(uint _nonce, bool _guessOdd, bytes32 _secret) constant public returns (bytes32 secretHash)
-    {
-        secretHash = keccak256(_nonce, _guessOdd, _secret);
-    }
-
     // anyone can try to finalize after the max block count or bets in the round are all revealed.
     function finalizeRound(uint roundId) public
     {
-        require(rounds[roundId].finalizedBlock != 0);
+        require(rounds[roundId].finalizedBlock == 0);
 
         uint finalizedBlock = getBlockNumber();
         
@@ -145,7 +139,9 @@ contract PlayBet is Owned {
             rounds[roundId].finalizedBlock = finalizedBlock;
             return;
         } else if (rounds[roundId].betIds.length == rounds[roundId].betCount) {
-            calculateJackpot(roundId);
+            assert( calculateJackpotInFinalize(roundId) );
+
+            rounds[roundId].finalizedBlock = finalizedBlock;
         } else
         {
             throw;
@@ -171,6 +167,24 @@ contract PlayBet is Owned {
     {
         owner.transfer(poolAmount);
         ClaimFromPool();
+    }
+
+    /*
+     * Constant functions
+     */
+    // For players to calculate hash of secret before start a bet.
+    function calculateSecretHash(uint _nonce, bool _guessOdd, bytes32 _secret) constant public returns (bytes32 secretHash)
+    {
+        secretHash = keccak256(_nonce, _guessOdd, _secret);
+    }
+    
+
+    function getBetIdAtRound(uint roundIndex, uint innerIndex) constant public returns (uint) {
+        return rounds[roundIndex].betIds[innerIndex];
+    }
+
+    function getBetSizeAtRound(uint roundIndex) constant public returns (uint) {
+        return rounds[roundIndex].betIds.length;
     }
 
     /*
@@ -206,8 +220,6 @@ contract PlayBet is Owned {
         returns (uint roundId)
     {
         roundId = roundCount;
-        Round round;
-        rounds[roundId] = round;
         rounds[roundId].betCount = _betCount;
         rounds[roundId].maxBetBlockCount = _maxBetBlockCount;
         rounds[roundId].maxRevealBlockCount = _maxRevealBlockCount;
@@ -301,7 +313,7 @@ contract PlayBet is Owned {
         }
     }
 
-    function calculateJackpot(uint roundId) internal
+    function calculateJackpotInFinalize(uint roundId) internal returns (bool)
     {
         uint finalizedBlock = getBlockNumber();
         
@@ -313,8 +325,8 @@ contract PlayBet is Owned {
 
             poolAmount = poolAmount.add(dustLeft);
 
-            rounds[roundId].finalizedBlock = finalizedBlock;
-            return;
+            
+            return true;
         }
         else if (!betsRevealed && finalizedBlock.sub(rounds[roundId].startRevealBlock) > rounds[roundId].maxBetBlockCount)
         {
@@ -333,10 +345,9 @@ contract PlayBet is Owned {
                 }
             }
 
-            rounds[roundId].finalizedBlock = finalizedBlock;
-            return;
+            return true;
         } else{
-            throw;
+            return false;
         }
     }
 
